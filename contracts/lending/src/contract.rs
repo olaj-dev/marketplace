@@ -1,7 +1,11 @@
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, IntoVal, Symbol, Vec};
 
-use crate::storage::{increment_listing_count, load_listing, save_listing};
-use crate::types::{InterestTier, LendingError, LendingListing, ListingStatus};
+use crate::events;
+use crate::settlement;
+use crate::storage::{
+    get_config, get_position, increment_listing_count, load_listing, save_listing, set_position,
+};
+use crate::types::{InterestTier, LendingError, LendingListing, ListingStatus, PositionStatus};
 
 #[contract]
 pub struct LendingContract;
@@ -96,8 +100,16 @@ impl LendingContract {
         }
 
         // Transfer additional collateral from borrower to contract.
-        let collateral_client = token::Client::new(&env, &position.collateral_currency);
-        collateral_client.transfer(&position.borrower, &env.current_contract_address(), &amount);
+        env.invoke_contract::<()>(
+            &position.collateral_currency,
+            &Symbol::new(&env, "transfer"),
+            soroban_sdk::vec![
+                &env,
+                position.borrower.clone().into_val(&env),
+                env.current_contract_address().into_val(&env),
+                amount.into_val(&env),
+            ],
+        );
 
         position.collateral_amount += amount;
         set_position(&env, position_id, &position);
@@ -134,16 +146,25 @@ impl LendingContract {
         }
 
         // Transfer NFT from borrower back to contract, then to lender.
-        let nft_client = token::Client::new(&env, &position.nft_contract);
-        nft_client.transfer(
-            &position.borrower,
-            &env.current_contract_address(),
-            &(position.token_id as i128),
+        env.invoke_contract::<()>(
+            &position.nft_contract,
+            &Symbol::new(&env, "transfer"),
+            soroban_sdk::vec![
+                &env,
+                position.borrower.clone().into_val(&env),
+                env.current_contract_address().into_val(&env),
+                (position.token_id as i128).into_val(&env),
+            ],
         );
-        nft_client.transfer(
-            &env.current_contract_address(),
-            &position.lender,
-            &(position.token_id as i128),
+        env.invoke_contract::<()>(
+            &position.nft_contract,
+            &Symbol::new(&env, "transfer"),
+            soroban_sdk::vec![
+                &env,
+                env.current_contract_address().into_val(&env),
+                position.lender.clone().into_val(&env),
+                (position.token_id as i128).into_val(&env),
+            ],
         );
 
         // Settle collateral waterfall (no liquidator on voluntary return).
@@ -164,6 +185,5 @@ impl LendingContract {
 
     pub fn get_listing(env: Env, listing_id: u64) -> Option<LendingListing> {
         load_listing(&env, listing_id)
-    }
     }
 }
